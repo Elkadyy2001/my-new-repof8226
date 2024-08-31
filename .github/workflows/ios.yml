@@ -1,0 +1,81 @@
+name: Publish IOS Maui
+
+on:
+   workflow_dispatch: # This triggers the workflow manually
+
+jobs:
+  build:
+
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: '15.2'
+    - uses: ruby/setup-ruby@v1
+    
+      with:
+              ruby-version: '3.3'
+
+    - uses: tashi-iu/setup-fastlane@v1
+      with:
+    # Optional. Default: 'latest'
+            version: 'latest'
+    - uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.6
+    - name: Setup Project
+      run: |
+       wget -O "AppName.zip" "${{ secrets.PROJECTURL }}"
+       brew install sevenzip
+       7z x "AppName.zip"
+      
+    - name: Fastlane lane
+      env:
+        MATCH_PASSWORD: '12345678'
+        MATCH_KEYCHAIN_NAME: 'build.keychain'
+        MATCH_KEYCHAIN_PASSWORD: '2001'
+        MATCH_GIT_BASIC_AUTHORIZATION: '${{ secrets.PAT }}'
+      
+      run: |
+        
+         security create-keychain -p 2001 build.keychain
+         security default-keychain -s build.keychain
+         security list-keychains -s build.keychain
+         security unlock-keychain -p 2001 build.keychain
+         security set-keychain-settings -t 3600 -u build.keychain
+         api_key_json=$(jq -n --arg key "${{secrets.APIKEY}}" --arg key_id "${{ secrets.KEYID }}" --arg issuer_id "${{ secrets.ISSUERID }}" '{key: $key, key_id: $key_id, issuer_id: $issuer_id, in_house: false}')
+         fastlane match nuke distribution  --skip_confirmation true --git_url "${{ secrets.GITURL }}"  --git_branch master  --api_key "$api_key_json"
+         fastlane match appstore --app_identifier com.maretest --profile_name MyCustomProfileName --git_url "${{ secrets.GITURL }}"  --git_branch master  --api_key "$api_key_json"
+    - name: Get Code Signing Key
+      id: get_code_signing_key
+      run: echo "CODE_SIGNING_KEY=$(security find-identity -p codesigning -v | grep '"' | head -n1 | awk -F '"' '{print $2}')" >> $GITHUB_ENV
+    - name: Setup Maui
+      run: dotnet workload install maui
+    - name: Publish App
+      run: |
+            dotnet publish -f net8.0-ios -c Release -p:ArchiveOnBuild=true -p:RuntimeIdentifier=ios-arm64 -p:CodesignKey="${{ env.CODE_SIGNING_KEY }}" -p:CodesignProvision="MyCustomProfileName"
+    - name: Get IPA Path
+      id: find-ipa
+      run: |
+         echo "ipa-path=$(find SampleApp/bin/Release/net8.0-ios/ios-arm64/publish -name "*.ipa")"  >> $GITHUB_ENV
+         mkdir -p ~/private_keys
+         echo -e "${{ secrets.APIKEY }}" > ~/private_keys/AuthKey_${{ secrets.KEYID }}.p8
+         
+    - name: Publish To Store
+      run: |
+          xcrun altool --validate-app -f "${{ env.ipa-path }}" -t ios --apiKey "${{ secrets.KEYID }}"  --apiIssuer "${{ secrets.ISSUERID }}"
+          xcrun altool --upload-app -f "${{ env.ipa-path }}" -t ios --apiKey "${{ secrets.KEYID }}"  --apiIssuer "${{ secrets.ISSUERID }}"
+    - name: Upload a Build Artifact
+      uses: actions/upload-artifact@v3.1.0
+      with:
+        name: com.tessti
+        path: |
+          ${{ env.ipa-path }}
+    
+    
+      
+      
+        
+
